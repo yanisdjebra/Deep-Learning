@@ -149,96 +149,6 @@ class NormalizationLayer(tf.keras.layers.Layer):
 
 
 @tf.keras.utils.register_keras_serializable(package="CustomLayers")
-class NormalizationLayer(tf.keras.layers.Layer):
-	def __init__(self, normalize=True, norm_type='std', data_list_index=(0,), mean=None, std=None, axis=None, **kwargs):
-		super().__init__(**kwargs)
-		self.normalize = normalize
-		self.norm_type = norm_type
-		self.input_mean = mean
-		self.input_std = std
-		self.axis = axis
-		if type(data_list_index) is not tuple:
-			raise ValueError('data_list_index should be tuple (given {})'.format(type(data_list_index)).__name__)
-		self.data_list_index = data_list_index
-		self.var0 = [None for _ in range(np.max(data_list_index) + 1)]  # Mean or min value
-		self.var1 = [None for _ in range(np.max(data_list_index) + 1)]  # Std or (max - min) value
-
-	def call(self, inputs, **kwargs):
-		if type(inputs) is list:
-			if self.normalize:
-				inputs_preprocess = [(inputs[idx] - self.var0[idx]) / self.var1[idx] for idx in
-				                     self.data_list_index]
-			else:
-				inputs_preprocess = [inputs[idx] * self.var1[idx] + self.var0[idx] for idx in
-				                     self.data_list_index]
-
-			outputs = inputs.copy()
-			for pp, idx in enumerate(self.data_list_index):
-				outputs[idx] = inputs_preprocess[pp]
-
-		else:
-			if self.normalize:
-				inputs_preprocess = (inputs - self.var0[self.data_list_index[0]]) / self.var1[self.data_list_index[0]]
-			else:
-				inputs_preprocess = inputs * self.var1[self.data_list_index[0]] + self.var0[self.data_list_index[0]]
-
-			outputs = inputs_preprocess
-
-		return outputs
-
-	def adapt(self, data):
-		if type(data) is not list:
-			data_list = [data, ]
-		else:
-			data_list = data
-
-		for idx_list in self.data_list_index:
-			if self.var0[idx_list] is None:
-				if self.axis is None:
-					mean_std_shape = (data_list[idx_list].shape[-1],)
-				else:
-					mean_std_shape = tuple(data_list[idx_list].shape[d]
-					                       for d in range(len(data_list[idx_list].shape)) if d not in self.axis)
-				self.var0[idx_list] = self.add_weight(name='var0_{}'.format(idx_list), shape=mean_std_shape,
-				                                      initializer='zeros',
-				                                      trainable=False)
-			if self.var1[idx_list] is None:
-				if self.axis is None:
-					mean_std_shape = (data_list[idx_list].shape[-1],)
-				else:
-					mean_std_shape = tuple(data_list[idx_list].shape[d]
-					                       for d in range(len(data_list[idx_list].shape)) if d not in self.axis)
-				self.var1[idx_list] = self.add_weight(name='var1_{}'.format(idx_list), shape=mean_std_shape,
-				                                      initializer='ones',
-				                                      trainable=False)
-
-			if self.axis is None:
-				axis_op = tuple(np.arange(data_list[idx_list].ndim - 1))
-			else:
-				axis_op = self.axis
-
-			if self.norm_type.lower() == 'std':
-				self.var0[idx_list].assign(tf.math.reduce_mean(data_list[idx_list], axis=axis_op))
-				self.var1[idx_list].assign(tf.math.reduce_std(data_list[idx_list], axis=axis_op))
-			elif self.norm_type.lower() == 'max':
-				self.var0[idx_list].assign(tf.math.reduce_min(data_list[idx_list], axis=axis_op))
-				self.var1[idx_list].assign(tf.math.reduce_max(data_list[idx_list], axis=axis_op)
-				                           - tf.math.reduce_min(data_list[idx_list], axis=axis_op))
-
-	def get_config(self):
-		config = super().get_config()
-		config.update({
-			'norm_type':       self.norm_type,
-			'mean':            self.input_mean,
-			'std':             self.input_std,
-			'axis':            self.axis,
-			'data_list_index': self.data_list_index,
-			'normalize':       self.normalize,
-		})
-		return config
-
-
-@tf.keras.utils.register_keras_serializable(package="CustomLayers")
 class Identity(Layer):
 	def __init__(self):
 		super(Identity, self).__init__()
@@ -468,6 +378,9 @@ class ConvBlock(Layer):
 			f_norm = nn.BatchNormalization
 		elif self.norm_type == 'layer':
 			f_norm = nn.LayerNormalization
+		else:
+			raise NotImplementedError('``norm_type`` input argument not recognized '
+			                          '(given {})'.format(self.norm_type))
 		# Weight regularizer
 		conv_args = self.conv_args.copy()
 		if self.l2_reg is not None:
@@ -487,18 +400,18 @@ class ConvBlock(Layer):
 		if 'post' in self.norm_list:
 			self.norm_post_l = [f_norm() for c in range(self.num_convs)]
 
-	def call(self, x):
+	def call(self, x, training=False):
 		"""Layer call"""
 		x_s = x
 		for fi in range(self.num_convs):
-			x = self.conv_l[fi](x)
+			x = self.conv_l[fi](x, training=training)
 			if 'pre' in self.norm_list:
-				x = self.norm_pre_l[fi](x)
+				x = self.norm_pre_l[fi](x, training=training)
 			if self.flag_res and fi == self.num_convs - 1:
 				x = self.res_add([x, self.res_conv(x_s)])
 			x = self.activation_l(x)
 			if 'post' in self.norm_list:
-				x = self.norm_post_l[fi](x)
+				x = self.norm_post_l[fi](x, training=training)
 		return x
 
 	def get_config(self):
@@ -554,7 +467,8 @@ class UnetConditional(Layer):
 		self.cond_params = cond_params or {'network_name': 'encoder',
 		                                   'flag_flatten_input': True,
 		                                   'network_kwargs': {'enc_size': [256, 128, 64],
-		                                                      'latent_dim': 32}}
+		                                                      'latent_dim': 32}
+		                                   }
 		self.normalize_feature_dict = normalize_feature_dict or {}
 		self.normalize_label_dict = normalize_label_dict or {}
 		# self.n_condition = n_condition  # number of conditions to embed (e.g., time and digit)
@@ -570,8 +484,8 @@ class UnetConditional(Layer):
 		# Conditional embedding
 		self.cond_mlp_down = []
 		self.cond_mlp_up = []
-		self.normalize = {}
-		self.denormalize = {}
+		self.normalize_layer = {}
+		self.denormalize_layer = {}
 
 	def build(self, input_shape):
 
@@ -580,8 +494,8 @@ class UnetConditional(Layer):
 		                                  [self.normalize_feature_dict,
 		                                   self.normalize_label_dict]):
 			lower_keys = list(map(str.lower, normalize_dict.keys()))
-			self.normalize[name_i] = None
-			self.denormalize[name_i] = None
+			self.normalize_layer[name_i] = None
+			self.denormalize_layer[name_i] = None
 			if ('mean' in lower_keys) and ('var' in lower_keys or 'std' in lower_keys):
 				normalize_kwargs = {
 					'mean': np.array(normalize_dict.get('mean')),
@@ -593,11 +507,14 @@ class UnetConditional(Layer):
 					'min': np.array(normalize_dict.get('min')),
 					'max': np.array(normalize_dict.get('max'))
 				}
+			else:
+				raise ValueError('Normalization method for {} not recognized. Normalization dict '
+				                 'should have named variables ``min`` and ``max`` or ``mean`` and '
+				                 '``var`` (or ``std``). Given {}'.format(name_i, normalize_dict.keys()))
 
 			# Create a Normalization layer and set its internal state using passed mean and variance
-				self.normalize[name_i] = NormalizationLayer(**normalize_kwargs)
-				self.denormalize[name_i] = NormalizationLayer(invert=True, **normalize_kwargs)
-
+			self.normalize_layer[name_i] = NormalizationLayer(**normalize_kwargs)
+			self.denormalize_layer[name_i] = NormalizationLayer(invert=True, **normalize_kwargs)
 
 		# Get shapes
 		ndim = len(input_shape) - 2
@@ -721,10 +638,10 @@ class UnetConditional(Layer):
 	def call(self, inputs, time=None, condition=None, training=False, **kwargs):
 		x = inputs
 
-		if self.normalize['feature'] is not None:
-			x = self.normalize['feature'](x)
-		if self.normalize['label'] is not None:
-			condition = self.normalize['label'](condition)
+		if self.normalize_layer['feature'] is not None:
+			x = self.normalize_layer['feature'](x)
+		if self.normalize_layer['label'] is not None:
+			condition = self.normalize_layer['label'](condition)
 
 		conv_out = []
 		for di, (conv, pool, dropout) in enumerate(self.downs):
@@ -779,8 +696,8 @@ class UnetConditional(Layer):
 
 		x = self.final_conv(x, training=training)
 
-		if self.denormalize['feature'] is not None:
-			x = self.denormalize['feature'](x)
+		if self.denormalize_layer['feature'] is not None:
+			x = self.denormalize_layer['feature'](x)
 
 		return x
 
@@ -833,25 +750,6 @@ class Autoencoder(Layer):
 		self.normalize_label_dict = normalize_label_dict or {}
 		self.encoder_kwargs = encoder_kwargs
 		self.decoder_kwargs = decoder_kwargs
-
-		# Convert normalization input to list for serialization in get_config (not needed)
-		# for k, v in (normalize_feature_dict or {}).items():
-		# 	if isinstance(v, list):
-		# 		self.normalize_feature_dict[k] = v
-		# 	elif isinstance(v, (np.ndarray, np.generic)):
-		# 		self.normalize_feature_dict[k] = np.ndarray.tolist(v)
-		# 	else:
-		# 		raise TypeError('normalization features must be a list '
-		# 		                'or a numpy.ndarray. (given {})'.format(type(v)))
-		#
-		# for k, v in (normalize_label_dict or {}).items():
-		# 	if isinstance(v, list):
-		# 		self.normalize_label_dict[k] = v
-		# 	elif isinstance(v, (np.ndarray, np.generic)):
-		# 		self.normalize_label_dict[k] = np.ndarray.tolist(v)
-		# 		raise TypeError('normalization label must be a list '
-		# 		                'or a numpy.ndarray. (given {})'.format(type(v)))
-
 		self.kwargs = kwargs
 
 		self.encoder = None
@@ -861,8 +759,8 @@ class Autoencoder(Layer):
 		self._input_shape = None
 		self.reshape_dim = None
 		self.t_concat_shape = None
-		self.normalize = {}
-		self.denormalize = {}
+		self.normalize_layer = {}
+		self.denormalize_layer = {}
 
 		if (enc_size != dec_size[::-1]) and flag_skip:
 			raise ValueError('``enc_size`` and ``dec_size`` must have the same values (reversed) '
@@ -871,30 +769,31 @@ class Autoencoder(Layer):
 
 		# Create Normalization layers if normalize_*_dict is not None
 		for name_i, normalize_dict in zip(['feature', 'label'],
-		                          [self.normalize_feature_dict,
-		                           self.normalize_label_dict]):
-			lower_keys = map(str.lower, normalize_dict.keys())
-			self.normalize[name_i] = None
-			self.denormalize[name_i] = None
+		                                  [self.normalize_feature_dict,
+		                                   self.normalize_label_dict]):
+			lower_keys = list(map(str.lower, normalize_dict.keys()))
+			self.normalize_layer[name_i] = None
+			self.denormalize_layer[name_i] = None
 			if ('mean' in lower_keys) and ('var' in lower_keys or 'std' in lower_keys):
-				# Create a Normalization layer and set its internal state using passed mean and variance
-				mean_val = np.array(normalize_dict.get('mean'))
-				var_val = np.array(normalize_dict.get('var')) or \
-				        (np.array(normalize_dict.get('std', 0.)) ** 2)
-
-				self.normalize[name_i] = nn.Normalization(mean=mean_val,
-				                                          variance=var_val)
-				self.denormalize[name_i] = nn.Normalization(mean=mean_val,
-				                                            variance=var_val,
-				                                            invert=True)
+				normalize_kwargs = {
+					'mean': np.array(normalize_dict.get('mean')),
+					'var': np.array(normalize_dict.get('var', None)) if 'var' in lower_keys \
+					else (np.array(normalize_dict.get('std', None)) ** 2)
+				}
 			elif ('min' in lower_keys) and ('max' in lower_keys):
-				min_val = np.array(normalize_dict.get('min'))
-				max_val = np.array(normalize_dict.get('max'))
-				self.normalize[name_i] = NormalizationLayer(min=min_val,
-				                                                  max=max_val)
-				self.denormalize[name_i] = NormalizationLayer(min=min_val,
-				                                                    max=max_val,
-				                                                    invert=True)
+				normalize_kwargs = {
+					'min': np.array(normalize_dict.get('min')),
+					'max': np.array(normalize_dict.get('max'))
+				}
+			else:
+				raise ValueError('Normalization method for {} not recognized. Normalization dict '
+				                 'should have named variables ``min`` and ``max`` or ``mean`` and '
+				                 '``var`` (or ``std``). Given {}'.format(name_i, normalize_dict.keys()))
+
+			# Create a Normalization layer and set its internal state using passed mean and variance
+			self.normalize_layer[name_i] = NormalizationLayer(**normalize_kwargs)
+			self.denormalize_layer[name_i] = NormalizationLayer(invert=True, **normalize_kwargs)
+
 
 	def build(self, input_shape=None):
 		ndim = len(input_shape) - 2
@@ -918,10 +817,10 @@ class Autoencoder(Layer):
 	def call(self, inputs, time=None, condition=None, training=False, **kwargs):
 
 		x1 = inputs
-		if self.normalize['feature'] is not None:
-			x1 = self.normalize['feature'](x1)
-		if self.normalize['label'] is not None:
-			condition = self.normalize['label'](condition)
+		if self.normalize_layer['feature'] is not None:
+			x1 = self.normalize_layer['feature'](x1)
+		if self.normalize_layer['label'] is not None:
+			condition = self.normalize_layer['label'](condition)
 
 		t = tf.cast(tf.reshape(time, self.reshape_dim), x1.dtype)
 
@@ -940,8 +839,8 @@ class Autoencoder(Layer):
 		if self.flag_flatten:
 			reconstructed = nn.Reshape(self._input_shape[1:])(reconstructed)
 
-		if self.denormalize['feature'] is not None:
-			reconstructed = self.denormalize['feature'](reconstructed)
+		if self.denormalize_layer['feature'] is not None:
+			reconstructed = self.denormalize_layer['feature'](reconstructed)
 
 		return reconstructed
 
