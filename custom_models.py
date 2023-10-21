@@ -4,8 +4,13 @@ from tensorflow.keras.layers import Input, Conv2D, MaxPooling2D, Dropout
 from tensorflow.keras.layers import Conv2DTranspose, concatenate, Layer
 import tensorflow.keras.layers as nn
 import inspect
-
 import numpy as np
+
+DTYPE = 'float32'
+tf.keras.backend.set_floatx(DTYPE)
+TF_DTYPE = eval('tf.' + DTYPE)
+NP_DTYPE = eval('np.' + DTYPE)
+
 import custom_layers as cl
 import helpers as hlp
 
@@ -51,12 +56,14 @@ class UnetDiffConditional(Model):
 		self.beta_start = 1e-4 if noise_schedule is None else noise_schedule['beta_start']
 		self.beta_end = 2e-2 if noise_schedule is None else noise_schedule['beta_end']
 
-		self.beta = np.linspace(self.beta_start, self.beta_end, self.timesteps)
+		self.beta = np.linspace(self.beta_start, self.beta_end, self.timesteps,
+		                        dtype=NP_DTYPE)
 		self.alpha = 1 - self.beta
-		self.alpha_bar = np.cumprod(self.alpha, 0)
-		self.alpha_bar = np.concatenate((np.array([1.]), self.alpha_bar[:-1]), axis=0)
-		self.sqrt_alpha_bar = np.sqrt(self.alpha_bar)
-		self.sqrt_one_minus_alpha_bar = np.sqrt(1 - self.alpha_bar)
+		self.alpha_bar = np.cumprod(self.alpha, 0, dtype=NP_DTYPE)
+		self.alpha_bar = np.concatenate((np.array([1.], dtype=NP_DTYPE),
+		                                 self.alpha_bar[:-1]), axis=0)
+		self.sqrt_alpha_bar = np.sqrt(self.alpha_bar, dtype=NP_DTYPE)
+		self.sqrt_one_minus_alpha_bar = np.sqrt(1 - self.alpha_bar, dtype=NP_DTYPE)
 
 		self.conv_args = {'padding': 'same'}
 		self.ndim = None
@@ -286,7 +293,7 @@ class UnetDiffConditional(Model):
 		                      dtype=tf.int64)
 
 		# noised_image, noise = forward_noise_tf(rng, images, timestep_values)
-		noise = tf.random.normal(shape=images_shape, dtype=tf.float64)
+		noise = tf.random.normal(shape=images_shape, dtype=TF_DTYPE)
 		sqrt_alpha_bar_t = tf.reshape(tf.gather(self.sqrt_alpha_bar, t, axis=0), self.reshape_dim)
 		sqrt_one_minus_alpha_bar_t = tf.reshape(tf.gather(self.sqrt_one_minus_alpha_bar, t, axis=0), self.reshape_dim)
 		noised_image = sqrt_alpha_bar_t * images + sqrt_one_minus_alpha_bar_t * noise
@@ -382,10 +389,11 @@ class DiffusionModel(Model):
 		                                  max_beta=self.max_beta)
 
 		self.alpha = 1 - self.beta
-		self.alpha_bar = np.cumprod(self.alpha, 0)
-		self.alpha_bar = np.concatenate((np.array([1.]), self.alpha_bar[:-1]), axis=0)
-		self.sqrt_alpha_bar = np.sqrt(self.alpha_bar)
-		self.sqrt_one_minus_alpha_bar = np.sqrt(1 - self.alpha_bar)
+		self.alpha_bar = np.cumprod(self.alpha, 0, dtype=NP_DTYPE)
+		self.alpha_bar = np.concatenate((np.array([1.], dtype=NP_DTYPE),
+		                                 self.alpha_bar[:-1]), axis=0)
+		self.sqrt_alpha_bar = np.sqrt(self.alpha_bar, dtype=NP_DTYPE)
+		self.sqrt_one_minus_alpha_bar = np.sqrt(1 - self.alpha_bar, dtype=NP_DTYPE)
 
 		ema_decay = kwargs.get('ema_decay', 0.9999)
 		self.ema = tf.train.ExponentialMovingAverage(decay=ema_decay)
@@ -460,7 +468,7 @@ class DiffusionModel(Model):
 		loss = noise_loss + reg_loss
 		return loss, noise_loss
 
-
+	# @tf.function
 	def train_step(self, data):
 		""" Override training step in model.fit() for the diffusion process.
 		A loss needs to be provided when compiling the model (e.g., l2 norm)."""
@@ -475,7 +483,7 @@ class DiffusionModel(Model):
 		t = tf.random.uniform(shape=[batch_size],
 		                      minval=0, maxval=self.timesteps,
 		                      dtype=tf.int64)
-		noise = tf.random.normal(shape=images_shape, dtype=tf.float64)
+		noise = tf.random.normal(shape=images_shape, dtype=TF_DTYPE)
 
 		# Retrieve the current timestep for each batch, and reshape for broadcast
 		sqrt_alpha_bar_t = tf.reshape(tf.gather(self.sqrt_alpha_bar, t, axis=0), self.reshape_dim)
@@ -490,8 +498,11 @@ class DiffusionModel(Model):
 		with tf.GradientTape() as tape:
 			prediction = self.call(noised_image, time=t, training=True, **cond_kwargs)
 			loss, noise_loss = self.compute_loss(y=noise, y_pred=prediction)
+			# scaled_loss = self.optimizer.get_scaled_loss(loss)
 			# noise_loss = tf.math.reduce_mean((noise - prediction) ** 2)  # Default loss for diffusion models
 
+		# scaled_gradients = tape.gradient(scaled_loss, self.trainable_variables)
+		# gradients = self.optimizer.get_unscaled_gradients(scaled_gradients)
 		gradients = tape.gradient(loss, self.trainable_variables)
 		self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
 		# Apply exponential moving average for stability
@@ -503,7 +514,7 @@ class DiffusionModel(Model):
 
 		return {m.name: m.result() for m in self.metrics}
 
-
+	# @tf.function
 	def test_step(self, data):
 		""" Override default validation step in model.evaluate() for the diffusion process.
 		A loss needs to be provided when compiling the model (e.g., l2 norm)."""
@@ -518,7 +529,7 @@ class DiffusionModel(Model):
 		t = tf.random.uniform(shape=[batch_size],
 		                      minval=0, maxval=self.timesteps,
 		                      dtype=tf.int64)
-		noise = tf.random.normal(shape=images_shape, dtype=tf.float64)
+		noise = tf.random.normal(shape=images_shape, dtype=TF_DTYPE)
 
 		# Retrieve the current timestep for each batch, and reshape for broadcast
 		sqrt_alpha_bar_t = tf.reshape(tf.gather(self.sqrt_alpha_bar, t, axis=0), self.reshape_dim)
@@ -538,6 +549,7 @@ class DiffusionModel(Model):
 
 		return {m.name: m.result() for m in self.metrics}
 
+	@tf.function
 	def ddpm(self, x_t, time, condition=None, variance='beta'):
 		""" Predicts x^{t-1} based on x^{t} using the DDPM model.
 		Use in a for loop from T to 1 to retrieve input from noise."""
@@ -563,6 +575,7 @@ class DiffusionModel(Model):
 
 		return mean + tf.sqrt(var) * z
 
+	@tf.function
 	def ddim(self, x_t, time, condition=None, eta=0.):
 		"""Extension of DDPM that uses non-markovian process for inference.
 		Uses a rate :math:`0 < \\eta \\leq 1` to control stochasticity. Produce

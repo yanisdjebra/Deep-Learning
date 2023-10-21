@@ -7,6 +7,9 @@ import inspect
 
 import numpy as np
 import helpers as hlp
+from custom_models import DTYPE, TF_DTYPE, NP_DTYPE
+
+tf.keras.backend.set_floatx(DTYPE)
 
 # Clear previously registered custom objects from this module
 del_key = []
@@ -15,7 +18,6 @@ for key in tf.keras.utils.get_custom_objects().keys():
 		del_key.append(key)
 for del_key_i in del_key:
 	tf.keras.utils.get_custom_objects().pop(del_key_i)
-
 
 ## Basic Layers and Blocks
 
@@ -35,10 +37,10 @@ class SinusoidalPosEmb(Layer):
 		self.max_positions = max_positions
 
 	def call(self, x, training=True):
-		x = tf.cast(x, tf.float64)
+		x = tf.cast(x, TF_DTYPE)
 		half_dim = self.dim // 2
-		emb = tf.cast(tf.math.log(self.max_positions), dtype=tf.float64) / (half_dim - 1)
-		emb = tf.exp(tf.range(half_dim, dtype=tf.float64) * -emb)
+		emb = tf.cast(tf.math.log(self.max_positions), dtype=TF_DTYPE) / (half_dim - 1)
+		emb = tf.exp(tf.range(half_dim, dtype=TF_DTYPE) * -emb)
 		emb = x[:, None] * emb[None, :]
 
 		emb = tf.concat([tf.sin(emb), tf.cos(emb)], axis=-1)
@@ -114,7 +116,7 @@ class NormalizationLayer(tf.keras.layers.Layer):
 			self.mode = 'minmax'
 		elif mean is not None:
 			self.var_sub = mean
-			self.var_div = np.sqrt(var) if var is not None else std
+			self.var_div = np.sqrt(var, dtype=NP_DTYPE) if var is not None else std
 			self.mode = 'std'
 		else:
 			raise ValueError('``min`` and ``max`` or ``mean`` and '
@@ -277,7 +279,8 @@ class Decoder_v3(Layer):
 			                                                   name='hidden_decoder_layer_{}'.format(ee),
 			                                                   **self.kwargs)
 		self.dense_output = nn.Dense(self.output_dim, activation=self.activation,
-		                                 name='Decoder_output_layer', **self.kwargs)
+		                             name='Decoder_output_layer', dtype=TF_DTYPE,
+		                             **self.kwargs)
 
 	def call(self, inputs, training=False):
 		if len(inputs) > 1:
@@ -498,14 +501,14 @@ class UnetConditional(Layer):
 			self.denormalize_layer[name_i] = None
 			if ('mean' in lower_keys) and ('var' in lower_keys or 'std' in lower_keys):
 				normalize_kwargs = {
-					'mean': np.array(normalize_dict.get('mean')),
-					'var': np.array(normalize_dict.get('var', None)) if 'var' in lower_keys \
-					else (np.array(normalize_dict.get('std', None)) ** 2)
+					'mean': np.array(normalize_dict.get('mean'), dtype=NP_DTYPE),
+					'var': np.array(normalize_dict.get('var', None), dtype=NP_DTYPE) if 'var' in lower_keys \
+					else (np.array(normalize_dict.get('std', None), dtype=NP_DTYPE) ** 2)
 				}
 			elif ('min' in lower_keys) and ('max' in lower_keys):
 				normalize_kwargs = {
-					'min': np.array(normalize_dict.get('min')),
-					'max': np.array(normalize_dict.get('max'))
+					'min': np.array(normalize_dict.get('min'), dtype=NP_DTYPE),
+					'max': np.array(normalize_dict.get('max'), dtype=NP_DTYPE)
 				}
 			else:
 				raise ValueError('Normalization method for {} not recognized. Normalization dict '
@@ -560,7 +563,7 @@ class UnetConditional(Layer):
 				else:
 					sin_emb = Identity()
 				tmp_cond_layer.append(Sequential([
-					sin_emb, nn.Flatten() if self.cond_params['flag_flatten_input']
+					sin_emb, nn.Flatten() if self.cond_params.get('flag_flatten_input', True)
 					else Identity()] + cond_emb_layer[cond_i] + \
 					# nn.LayerNormalization(),
 					[nn.Dense(units=tf.reduce_prod(im_size)),
@@ -573,8 +576,8 @@ class UnetConditional(Layer):
 			# Inner block
 			if self.block_type == 'conv':
 				tmp_layer.append(ConvBlock(ndim, num_units,
-				                              **hlp.dict_merge({'conv_args': self.conv_args},
-				                                           self.block_params)))
+				                           **hlp.dict_merge({'conv_args': self.conv_args},
+				                                            self.block_params)))
 			else:
 				raise NotImplementedError(
 					'Block type unknown ({})'.format(self.block_type))
@@ -602,7 +605,7 @@ class UnetConditional(Layer):
 				else:
 					sin_emb = Identity()
 				tmp_cond_layer.append(Sequential([
-					sin_emb, nn.Flatten() if self.cond_params['flag_flatten_input']
+					sin_emb, nn.Flatten() if self.cond_params.get('flag_flatten_input', True)
 					else Identity()] + cond_emb_layer[cond_i] + \
 					# nn.LayerNormalization(),
 					[nn.Dense(units=tf.reduce_prod(im_size)),
@@ -633,7 +636,8 @@ class UnetConditional(Layer):
 			self.ups.append(tmp_layer)
 
 		self.final_conv = f_conv(self.num_channels_out, kernel_size=(1,) * ndim,
-		                         activation=self.final_activation, **self.conv_args)
+		                         activation=self.final_activation, dtype=TF_DTYPE,
+		                         **self.conv_args)
 
 	def call(self, inputs, time=None, condition=None, training=False, **kwargs):
 		x = inputs
@@ -776,14 +780,14 @@ class Autoencoder(Layer):
 			self.denormalize_layer[name_i] = None
 			if ('mean' in lower_keys) and ('var' in lower_keys or 'std' in lower_keys):
 				normalize_kwargs = {
-					'mean': np.array(normalize_dict.get('mean')),
-					'var': np.array(normalize_dict.get('var', None)) if 'var' in lower_keys \
-					else (np.array(normalize_dict.get('std', None)) ** 2)
+					'mean': np.array(normalize_dict.get('mean'), dtype=NP_DTYPE),
+					'var': np.array(normalize_dict.get('var', None), dtype=NP_DTYPE) if 'var' in lower_keys \
+					else (np.array(normalize_dict.get('std', None), dtype=NP_DTYPE) ** 2)
 				}
 			elif ('min' in lower_keys) and ('max' in lower_keys):
 				normalize_kwargs = {
-					'min': np.array(normalize_dict.get('min')),
-					'max': np.array(normalize_dict.get('max'))
+					'min': np.array(normalize_dict.get('min'), dtype=NP_DTYPE),
+					'max': np.array(normalize_dict.get('max'), dtype=NP_DTYPE)
 				}
 			else:
 				raise ValueError('Normalization method for {} not recognized. Normalization dict '

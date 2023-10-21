@@ -3,6 +3,8 @@
 import copy as _copy
 import numpy as np
 
+from custom_models import TF_DTYPE, NP_DTYPE
+
 
 ## Helper functions
 
@@ -82,26 +84,28 @@ def dict_merge(*dict_list, **kwargs):
 def cos_beta_schedule(timesteps, offset_s=0.008, max_beta=0.999):
 	"""cosine schedule as proposed in https://arxiv.org/abs/2102.09672"""
 	beta = []
-	alpha_bar = lambda t: np.cos((t + offset_s) / (1 + offset_s) * np.pi / 2) ** 2
+	alpha_bar = lambda t: np.cos((t + offset_s) / (1 + offset_s) * np.pi / 2,
+	                             dtype=NP_DTYPE) ** 2
 	for i in range(timesteps):
 		t1 = i / timesteps
 		t2 = (i + 1) / timesteps
 		beta.append(min(1 - alpha_bar(t2) / alpha_bar(t1), max_beta))
-	return np.array(beta)
+	return np.array(beta, dtype=NP_DTYPE)
 
 
 def sigmoid_beta_schedule(timesteps, beta_start, beta_end):
-	sigmoid = lambda t: 1 / (1 + np.exp(-t))
-	beta = np.linspace(-6, 6, timesteps)
+	sigmoid = lambda t: 1 / (1 + np.exp(-t, dtype=NP_DTYPE))
+	beta = np.linspace(-6, 6, timesteps, dtype=NP_DTYPE)
 	return sigmoid(beta) * (beta_end - beta_start) + beta_start
 
 
 def quadratic_beta_schedule(timesteps, beta_start, beta_end):
-	return np.linspace(beta_start ** 0.5, beta_end ** 0.5, timesteps) ** 2
+	return np.linspace(beta_start ** 0.5, beta_end ** 0.5, timesteps,
+	                   dtype=NP_DTYPE) ** 2
 
 
 def linear_beta_schedule(timesteps, beta_start, beta_end):
-	return np.linspace(beta_start, beta_end, timesteps)
+	return np.linspace(beta_start, beta_end, timesteps, dtype=NP_DTYPE)
 
 
 def get_beta_schedule(schedule_name, timesteps, **kwargs):
